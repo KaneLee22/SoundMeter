@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#3F51B5</color>
+    <color name="primary_dark">#303F9F</color>
+    <color name="accent">#FF4081</color>
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+
+    <!-- Sound meter colors -->
+    <color name="sound_low">#4CAF50</color>     <!-- Green for low sound levels -->
+    <color name="sound_medium">#FFC107</color>  <!-- Yellow for medium sound levels -->
+    <color name="sound_high">#F44336</color>    <!-- Red for high sound levels -->
+    <color name="meter_background">#E0E0E0</color>
+    <color name="text_primary">#212121</color>
+    <color name="text_secondary">#757575</color>
+</resources>

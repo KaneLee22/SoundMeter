@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Sound Meter</string>
+    <string name="start_measuring">Start Measuring</string>
+    <string name="stop_measuring">Stop Measuring</string>
+    <string name="decibel_value">%1$.1f dB</string>
+    <string name="high_noise_warning">Warning: High Noise Level!</string>
+    <string name="permission_required">Microphone permission is required</string>
+    <string name="grant_permission">Grant Permission</string>
+    <string name="threshold_label">Alert Threshold: %1$.1f dB</string>
+    <string name="min_label">Min: %1$.1f dB</string>
+    <string name="max_label">Max: %1$.1f dB</string>
+    <string name="avg_label">Avg: %1$.1f dB</string>
+</resources>
