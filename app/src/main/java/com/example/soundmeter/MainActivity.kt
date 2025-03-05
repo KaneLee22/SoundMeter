@@ -2,280 +2,385 @@ package com.example.soundmeter
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.media.MediaPlayer
-import android.os.Build
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Bundle
-import android.view.View
-import android.widget.SeekBar
-import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.example.soundmeter.databinding.ActivityMainBinding
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
-import java.text.DecimalFormat
-import kotlin.math.roundToInt
+import com.example.soundmeter.ui.theme.Green
+import com.example.soundmeter.ui.theme.Red
+import com.example.soundmeter.ui.theme.SoundMeterTheme
+import com.example.soundmeter.ui.theme.Yellow
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.log10
+import kotlin.math.sqrt
 
-class MainActivity : AppCompatActivity() {
+/**
+ * MainActivity: Main entry point for the Sound Meter application
+ * References:
+ * - Algorithm for audio processing adapted from: https://github.com/albertopasqualetto/SoundMeterESP
+ */
+class MainActivity : ComponentActivity() {
 
     companion object {
-        private const val PERMISSION_REQUEST_RECORD_AUDIO = 1001
-        private const val DEFAULT_THRESHOLD = 85.0f
+        // Audio recording constants
+        private const val SAMPLE_RATE = 44100         // CD quality audio (Hz)
+        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
+        private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT  // 16-bit samples
+        private const val THRESHOLD_DB = 75.0         // Noise threshold in dB
+
+        // Reference amplitude (hearing threshold at 1kHz)
+        // Reference: https://github.com/albertopasqualetto/SoundMeterESP
+        private const val REFERENCE_AMPLITUDE = 0.00002  // 20 µPa - hearing threshold
     }
 
-    // View binding
-    private lateinit var binding: ActivityMainBinding
-
-    // Audio recorder instance
-    private val audioRecorder = AudioRecorder()
-
-    // Coroutine job for measurement
-    private var measurementJob: Job? = null
-
-    // Stats tracking
-    private var minDb = Double.MAX_VALUE
-    private var maxDb = 0.0
-    private var totalDb = 0.0
-    private var sampleCount = 0
-
-    // Threshold value
-    private var thresholdDb = DEFAULT_THRESHOLD
-
-    // Decimal formatting for display
-    private val decimalFormat = DecimalFormat("#0.0")
-
-    // Alert sound player
-    private var alertPlayer: MediaPlayer? = null
-    private var isAlertPlaying = false
+    // Audio recording components
+    private var audioRecord: AudioRecord? = null
+    private var bufferSize = 0
+    private val isRecording = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
 
-        // Initialize UI elements
-        setupUI()
+        // Calculate buffer size for audio recording
+        // This determines how much audio data we process at once
+        bufferSize = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            CHANNEL_CONFIG,
+            AUDIO_FORMAT
+        )
 
-        // Request microphone permission if needed
-        if (!hasMicrophonePermission()) {
-            requestMicrophonePermission()
-        }
-    }
-
-    private fun setupUI() {
-        // Initialize sound meter view with threshold
-        binding.soundMeterView.setThreshold(thresholdDb)
-
-        // Set up threshold seek bar
-        binding.thresholdSeekBar.progress = thresholdDb.roundToInt()
-        binding.tvThresholdLabel.text = getString(R.string.threshold_label, thresholdDb)
-
-        binding.thresholdSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                thresholdDb = progress.toFloat()
-                binding.tvThresholdLabel.text = getString(R.string.threshold_label, thresholdDb)
-                binding.soundMeterView.setThreshold(thresholdDb)
-            }
-
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-
-        // Set up toggle button
-        binding.btnToggle.setOnClickListener {
-            toggleMeasurement()
+        // Increase buffer size for better audio quality and stability
+        // Using a larger buffer helps prevent audio glitches
+        if (bufferSize != AudioRecord.ERROR && bufferSize != AudioRecord.ERROR_BAD_VALUE) {
+            bufferSize *= 3
         }
 
-        // Initialize stats display
-        updateStatsDisplay()
-    }
-
-    private fun toggleMeasurement() {
-        if (audioRecorder.isRecording()) {
-            stopMeasurement()
-        } else {
-            if (hasMicrophonePermission()) {
-                startMeasurement()
-            } else {
-                requestMicrophonePermission()
+        // Set up the UI using Jetpack Compose
+        setContent {
+            // Apply our custom theme
+            SoundMeterTheme {
+                // Display the main sound meter interface
+                SoundMeterApp(
+                    onStartRecording = { startRecording() },
+                    onStopRecording = { stopRecording() },
+                    isRecordingState = isRecording
+                )
             }
         }
     }
 
-    private fun startMeasurement() {
-        // Reset stats
-        resetStats()
+    /**
+     * Main Compose UI for the Sound Meter
+     *
+     * @param onStartRecording Callback for when recording should start
+     * @param onStopRecording Callback for when recording should stop
+     * @param isRecordingState Atomic boolean tracking recording state
+     */
+    @OptIn(ExperimentalPermissionsApi::class)
+    @Composable
+    fun SoundMeterApp(
+        onStartRecording: () -> Unit,
+        onStopRecording: () -> Unit,
+        isRecordingState: AtomicBoolean
+    ) {
+        // State for current decibel value
+        var decibelValue by remember { mutableStateOf(0.0) }
+        var statusMessage by remember { mutableStateOf("Ready") }
+        var statusColor by remember { mutableStateOf(Color.Black) }
 
-        // Start audio recording
-        if (!audioRecorder.start()) {
-            showErrorDialog("Could not start audio recording")
+        // Track whether we're actively recording
+        var isRecordingActive by remember { mutableStateOf(isRecordingState.get()) }
+
+        // Permission state using Accompanist Permissions library
+        val audioPermissionState = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
+        val permissionGranted = audioPermissionState.status.isGranted
+
+        // Effect to update decibel values while recording
+        // This runs in a coroutine to avoid blocking the UI thread
+        LaunchedEffect(isRecordingActive) {
+            if (isRecordingActive) {
+                launch(Dispatchers.IO) {
+                    val buffer = ShortArray(bufferSize / 2)
+
+                    while (isActive && isRecordingState.get()) {
+                        // Read audio data from microphone
+                        val readResult = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+
+                        if (readResult > 0) {
+                            // Calculate amplitude from audio samples
+                            val amplitude = calculateAmplitude(buffer, readResult)
+
+                            // Convert amplitude to decibels
+                            val db = calculateDecibels(amplitude)
+
+                            // Update UI state with non-negative dB value
+                            decibelValue = if (db < 0) 0.0 else db
+
+                            // Update status message based on noise level
+                            if (decibelValue >= THRESHOLD_DB) {
+                                statusMessage = "Warning: High noise level!"
+                                statusColor = Red
+                            } else {
+                                statusMessage = "Normal noise level"
+                                statusColor = Green
+                            }
+                        }
+
+                        // Limit update rate to reduce CPU usage
+                        delay(100) // Update every 100ms
+                    }
+                }
+            }
+        }
+
+        // Observe recording state changes
+        LaunchedEffect(isRecordingState.get()) {
+            isRecordingActive = isRecordingState.get()
+        }
+
+        // Main UI Surface
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Title
+                Text(
+                    text = "Sound Meter",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 32.dp)
+                )
+
+                Spacer(modifier = Modifier.height(48.dp))
+
+                // Current sound level label
+                Text(
+                    text = "Current Sound Level:",
+                    fontSize = 16.sp
+                )
+
+                // Decibel value display - large and prominent
+                Text(
+                    text = "${String.format("%.1f", decibelValue)} dB",
+                    fontSize = 42.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(vertical = 16.dp)
+                )
+
+                // Status message with color coding
+                Text(
+                    text = statusMessage,
+                    fontSize = 16.sp,
+                    color = statusColor,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Progress bar visualizing sound level
+                // The color changes based on intensity
+                val progressColor = when {
+                    decibelValue >= THRESHOLD_DB -> Red        // Dangerous level
+                    decibelValue >= THRESHOLD_DB - 10 -> Yellow // Warning level
+                    else -> Green                               // Safe level
+                }
+
+                LinearProgressIndicator(
+                    progress = (decibelValue / 100.0).toFloat().coerceIn(0f, 1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(40.dp)
+                        .padding(horizontal = 16.dp),
+                    color = progressColor
+                )
+
+                // Level indicators below progress bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(text = "Low")
+                    Text(text = "Medium")
+                    Text(text = "High")
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Conditional UI based on permission status
+                if (!permissionGranted) {
+                    // Show permission request UI if microphone access not granted
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(bottom = 64.dp)
+                    ) {
+                        Text(
+                            text = "Microphone permission is required",
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
+
+                        Button(onClick = { audioPermissionState.launchPermissionRequest() }) {
+                            Text("Request Permission")
+                        }
+                    }
+                } else {
+                    // Recording control buttons
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(bottom = 64.dp)
+                    ) {
+                        if (isRecordingActive) {
+                            Button(
+                                onClick = onStopRecording,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Red
+                                )
+                            ) {
+                                Text("Stop Measuring")
+                            }
+                        } else {
+                            Button(onClick = onStartRecording) {
+                                Text("Start Measuring")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    private fun startRecording() {
+        // Check for microphone permission
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            // Request permission if not granted
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                0
+            )
             return
         }
 
-        // Update UI to "recording" state
-        binding.btnToggle.text = getString(R.string.stop_measuring)
+        // Initialize AudioRecord if not already created
+        if (audioRecord == null) {
+            try {
+                // Create AudioRecord instance
+                // Reference: Approach based on https://github.com/albertopasqualetto/SoundMeterESP
+                audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,  // Use microphone as audio source
+                    SAMPLE_RATE,                   // 44.1kHz sampling rate
+                    CHANNEL_CONFIG,                // Mono channel
+                    AUDIO_FORMAT,                  // 16-bit PCM
+                    bufferSize                     // Buffer size calculated earlier
+                )
 
-        // Start continuous measurement
-        measurementJob = audioRecorder.startDecibelMeter()
-            .onEach { decibelValue ->
-                updateUI(decibelValue)
-            }
-            .catch { e ->
-                e.printStackTrace()
-                stopMeasurement()
-                showErrorDialog("Error during measurement: ${e.message}")
-            }
-            .launchIn(lifecycleScope)
-    }
-
-    private fun stopMeasurement() {
-        // Cancel measurement coroutine
-        measurementJob?.cancel()
-        measurementJob = null
-
-        // Stop audio recording
-        audioRecorder.stop()
-
-        // Stop alert if playing
-        stopAlertSound()
-
-        // Update UI
-        binding.btnToggle.text = getString(R.string.start_measuring)
-        binding.tvWarning.visibility = View.INVISIBLE
-    }
-
-    private fun updateUI(decibelValue: Double) {
-        // Update the current dB display
-        binding.tvDecibelValue.text = getString(
-            R.string.decibel_value,
-            decimalFormat.format(decibelValue)
-        )
-
-        // Update sound meter view
-        binding.soundMeterView.setDecibelLevel(decibelValue.toFloat())
-
-        // Update stats
-        updateStats(decibelValue)
-
-        // Check threshold for alert
-        if (decibelValue >= thresholdDb) {
-            showAlert()
-        } else {
-            hideAlert()
-        }
-    }
-
-    private fun updateStats(decibelValue: Double) {
-        // Skip very low values that might be noise floor
-        if (decibelValue < 10) return
-
-        // Update min/max/avg
-        if (decibelValue < minDb) minDb = decibelValue
-        if (decibelValue > maxDb) maxDb = decibelValue
-
-        totalDb += decibelValue
-        sampleCount++
-
-        // Update display
-        updateStatsDisplay()
-    }
-
-    private fun updateStatsDisplay() {
-        // Min display
-        val minText = if (minDb == Double.MAX_VALUE) "0.0" else decimalFormat.format(minDb)
-        binding.tvMinValue.text = getString(R.string.min_label, minText.toFloat())
-
-        // Max display
-        binding.tvMaxValue.text = getString(R.string.max_label, decimalFormat.format(maxDb).toFloat())
-
-        // Average display
-        val avgDb = if (sampleCount > 0) totalDb / sampleCount else 0.0
-        binding.tvAvgValue.text = getString(R.string.avg_label, decimalFormat.format(avgDb).toFloat())
-    }
-
-    private fun resetStats() {
-        minDb = Double.MAX_VALUE
-        maxDb = 0.0
-        totalDb = 0.0
-        sampleCount = 0
-        updateStatsDisplay()
-    }
-
-    private fun showAlert() {
-        binding.tvWarning.visibility = View.VISIBLE
-
-        // Play alert sound if not already playing
-        if (!isAlertPlaying) {
-            playAlertSound()
-        }
-    }
-
-    private fun hideAlert() {
-        binding.tvWarning.visibility = View.INVISIBLE
-        stopAlertSound()
-    }
-
-    private fun playAlertSound() {
-        // Simple beep sound using ToneGenerator would go here
-        // For this example, we're just using a flag
-        isAlertPlaying = true
-    }
-
-    private fun stopAlertSound() {
-        isAlertPlaying = false
-    }
-
-    private fun hasMicrophonePermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun requestMicrophonePermission() {
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.RECORD_AUDIO),
-            PERMISSION_REQUEST_RECORD_AUDIO
-        )
-    }
-
-    private fun showErrorDialog(message: String) {
-        AlertDialog.Builder(this)
-            .setTitle("Error")
-            .setMessage(message)
-            .setPositiveButton("OK") { dialog, _ -> dialog.dismiss() }
-            .show()
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-
-        if (requestCode == PERMISSION_REQUEST_RECORD_AUDIO) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                // Permission granted, can start recording
-                if (binding.btnToggle.text == getString(R.string.stop_measuring)) {
-                    startMeasurement()
+                // Check if initialization was successful
+                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                    return
                 }
-            } else {
-                // Permission denied
-                showErrorDialog("Microphone permission is required for this app to work")
+            } catch (e: Exception) {
+                return
             }
         }
+
+        try {
+            // Start the actual recording process
+            audioRecord?.startRecording()
+            isRecording.set(true)
+        } catch (e: Exception) {
+            stopRecording()
+        }
+    }
+
+    private fun stopRecording() {
+        // Update recording state
+        isRecording.set(false)
+
+        try {
+            // Stop AudioRecord
+            audioRecord?.stop()
+        } catch (e: Exception) {
+            // Already stopped or never started
+        }
+    }
+
+    private fun calculateAmplitude(buffer: ShortArray, readSize: Int): Double {
+        var sum = 0.0
+
+        // Sum the squares of all samples
+        for (i in 0 until readSize) {
+            sum += buffer[i] * buffer[i]
+        }
+
+        // Calculate Root Mean Square (RMS)
+        // Reference: Method from https://github.com/albertopasqualetto/SoundMeterESP
+        return sqrt(sum / readSize)
+    }
+
+
+    private fun calculateDecibels(amplitude: Double): Double {
+        // Avoid log of zero or negative values
+        if (amplitude <= 0) return 0.0
+
+        val normalizedAmplitude = amplitude / 32767.0
+        // Formula: dB = 20 * log10(amplitude / reference)
+        // Reference: Implementation based on https://github.com/albertopasqualetto/SoundMeterESP
+        return 20 * log10(normalizedAmplitude / REFERENCE_AMPLITUDE)
+    }
+
+    /**
+     * Lifecycle method: called when activity is no longer visible
+     */
+    override fun onStop() {
+        super.onStop()
+        // Always stop recording when app goes to background
+        stopRecording()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopMeasurement()
-        alertPlayer?.release()
-        alertPlayer = null
+
+        // Clean up resources to prevent memory leaks
+        try {
+            stopRecording()
+            audioRecord?.release()
+            audioRecord = null
+        } catch (e: Exception) {
+            // Handle cleanup errors
+        }
     }
 }

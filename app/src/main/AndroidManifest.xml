@@ -1,29 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.example.soundmeter">
+    xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Permission to record audio -->
+    <!-- Permission to record audio is essential for sound measurement -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Feature requirement for microphone - optional but recommended -->
+    <!-- Feature requirement declaration for devices with microphone -->
     <uses-feature android:name="android.hardware.microphone" android:required="true" />
 
     <application
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="Sound Meter"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.SoundMeter">
+        android:theme="@style/Theme.SoundMeter"
+        tools:targetApi="31">
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait">
+            android:theme="@style/Theme.SoundMeter">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
     </application>
-
 </manifest>
